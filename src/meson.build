@@ -55,6 +55,7 @@ code_files = files(
     'Widgets/PaneSwitcher.vala',
     'Widgets/PopoverMenuItem.vala',
     'Widgets/SearchBar.vala',
+    'Widgets/SymbolPickerPopover.vala',
     'Widgets/SourceList/CellRendererBadge.vala',
     'Widgets/SourceList/CellRendererExpander.vala',
     'Widgets/SourceList/SourceList.vala',

@@ -59,6 +59,7 @@ public class Scratch.MainWindow : Hdy.Window {
     public const string ACTION_OPEN_PROJECT = "action-open-project";
     public const string ACTION_COLLAPSE_ALL_FOLDERS = "action-collapse-all-folders";
     public const string ACTION_GO_TO = "action-go-to";
+    public const string ACTION_PICK_SYMBOL = "action-pick-symbol";
     public const string ACTION_NEW_TAB = "action-new-tab";
     public const string ACTION_NEW_FROM_CLIPBOARD = "action-new-from-clipboard";
     public const string ACTION_DUPLICATE_TAB = "action-duplicate-tab";
@@ -119,6 +120,7 @@ public class Scratch.MainWindow : Hdy.Window {
         { ACTION_SAVE_AS, action_save_as },
         { ACTION_TOGGLE_SHOW_FIND, action_toggle_show_find, null, "false" },
         { ACTION_GO_TO, action_go_to },
+        { ACTION_PICK_SYMBOL, action_pick_symbol },
         { ACTION_NEW_TAB, action_new_tab },
         { ACTION_NEW_FROM_CLIPBOARD, action_new_tab_from_clipboard },
         { ACTION_DUPLICATE_TAB, action_duplicate_tab },
@@ -192,8 +194,8 @@ public class Scratch.MainWindow : Hdy.Window {
 
     static construct {
         action_accelerators.set (ACTION_FIND + "::", "<Control>f");
-        action_accelerators.set (ACTION_FIND_NEXT, "<Control>g");
-        action_accelerators.set (ACTION_FIND_PREVIOUS, "<Control><shift>g");
+        action_accelerators.set (ACTION_FIND_NEXT, "<Control><Alt>g");
+        action_accelerators.set (ACTION_FIND_PREVIOUS, "<Control><Alt><shift>g");
         action_accelerators.set (ACTION_FIND_GLOBAL + "::", "<Control><shift>f");
         action_accelerators.set (ACTION_OPEN, "<Control>o");
         action_accelerators.set (ACTION_OPEN_PROJECT, "<Control><Shift>o");
@@ -201,6 +203,7 @@ public class Scratch.MainWindow : Hdy.Window {
         action_accelerators.set (ACTION_SAVE, "<Control>s");
         action_accelerators.set (ACTION_SAVE_AS, "<Control><shift>s");
         action_accelerators.set (ACTION_GO_TO, "<Control>i");
+        action_accelerators.set (ACTION_PICK_SYMBOL, "<Control>g");
         action_accelerators.set (ACTION_NEW_TAB, "<Control>n");
         action_accelerators.set (ACTION_DUPLICATE_TAB, "<Control><Shift>k" );
         action_accelerators.set (ACTION_UNDO, "<Control>z");
@@ -737,6 +740,7 @@ public class Scratch.MainWindow : Hdy.Window {
         // SearchManager's stuffs
         Utils.action_from_group (ACTION_TOGGLE_SHOW_FIND, actions).set_enabled (val);
         Utils.action_from_group (ACTION_GO_TO, actions).set_enabled (val);
+        Utils.action_from_group (ACTION_PICK_SYMBOL, actions).set_enabled (val);
         Utils.action_from_group (ACTION_SHOW_REPLACE, actions).set_enabled (val);
         // Toolbar Actions
         Utils.action_from_group (ACTION_SAVE, actions).set_enabled (val);
@@ -1350,6 +1354,7 @@ public class Scratch.MainWindow : Hdy.Window {
             Utils.action_from_group (ACTION_TOGGLE_SHOW_FIND, actions).set_enabled (is_current_doc);
             Utils.action_from_group (ACTION_FIND_NEXT, actions).set_enabled (is_current_doc);
             Utils.action_from_group (ACTION_FIND_PREVIOUS, actions).set_enabled (is_current_doc);
+            Utils.action_from_group (ACTION_PICK_SYMBOL, actions).set_enabled (is_current_doc);
             var can_global_search = is_current_doc || git_manager.active_project_path != null;
             Utils.action_from_group (ACTION_FIND_GLOBAL, actions).set_enabled (can_global_search);
 
@@ -1373,6 +1378,22 @@ public class Scratch.MainWindow : Hdy.Window {
 
     private void action_go_to () {
         toolbar.format_bar.activate_line_menubutton ();
+    }
+
+    private void action_pick_symbol () {
+        var doc = get_current_document ();
+        if (doc == null) {
+            return;
+        }
+
+        var picker = new Scratch.Widgets.SymbolPickerPopover (doc, document_view);
+        var picker_action = Utils.action_from_group (ACTION_PICK_SYMBOL, actions);
+        picker_action.set_enabled (false);
+        picker.closed.connect (() => {
+            picker_action.set_enabled (get_current_document () != null);
+            doc.source_view.grab_focus ();
+        });
+        picker.popup ();
     }
 
     private void action_to_lower_case () {
