@@ -32,6 +32,7 @@ namespace Scratch.Services {
         public delegate void VoidFunc ();
         public signal void doc_opened ();
         public signal void doc_closed (); // Connects to some plugins
+        public signal void document_saved (string path);
 
         // The parent window's actions
         public unowned SimpleActionGroup actions { get; set construct; }
@@ -712,6 +713,7 @@ namespace Scratch.Services {
 
             Gtk.RecentManager.get_default ().add_item (get_uri ());
             debug ("File “%s” saved successfully", get_basename ());
+            document_saved (file.get_path () ?? "");
 
             return true;
         }

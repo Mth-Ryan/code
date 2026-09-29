@@ -39,6 +39,7 @@ fontconfig_dep = dependency('fontconfig')
 pangofc_dep = dependency('pangoft2')
 posix_dep = meson.get_compiler('vala').find_library('posix')
 vte_dep = dependency('vte-2.91')
+sqlite_dep = dependency('sqlite3')
 
 code_resources = gnome.compile_resources(
     'code-resources', 'data/' + meson.project_name() + '.gresource.xml',
@@ -63,7 +64,8 @@ dependencies = [
     pangofc_dep,
     posix_dep,
     vala_dep,
-    vte_dep
+    vte_dep,
+    sqlite_dep
 ]
 
 git = find_program('git', required: false)

@@ -3,14 +3,15 @@
  * SPDX-FileCopyrightText: 2026 elementary Code contributors
  */
 
-private class Scratch.Widgets.SymbolPickerTag : Object {
+public class Scratch.Widgets.SymbolPickerTag : Object {
     public string name { get; construct; }
     public string kind { get; construct; }
     public string scope { get; construct; }
     public int line { get; construct; }
+    public string path { get; construct; }
 
-    public SymbolPickerTag (string name, string kind, string scope, int line) {
-        Object (name: name, kind: kind, scope: scope, line: line);
+    public SymbolPickerTag (string name, string kind, string scope, int line, string path = "") {
+        Object (name: name, kind: kind, scope: scope, line: line, path: path);
     }
 }
 
@@ -57,9 +58,10 @@ private class Scratch.Widgets.SymbolPickerRow : Gtk.ListBoxRow {
             ellipsize = Pango.EllipsizeMode.MIDDLE
         };
 
+        var location = tag.path != "" ? "%s:%d".printf (Path.get_basename (tag.path), tag.line) : "%d".printf (tag.line);
         var details = tag.scope != ""
-            ? "%s · %s · %d".printf (tag.scope, tag.kind, tag.line)
-            : "%s · %d".printf (tag.kind, tag.line);
+            ? "%s · %s · %s".printf (tag.scope, tag.kind, location)
+            : "%s · %s".printf (tag.kind, location);
         var subtitle = new Gtk.Label (details) {
             halign = Gtk.Align.START,
             ellipsize = Pango.EllipsizeMode.MIDDLE
@@ -82,18 +84,40 @@ private class Scratch.Widgets.SymbolPickerRow : Gtk.ListBoxRow {
     }
 }
 
+private class Scratch.Widgets.SymbolPickerMatch : Object {
+    public SymbolPickerTag tag { get; construct; }
+    public int score { get; construct; }
+
+    public SymbolPickerMatch (SymbolPickerTag tag, int score) {
+        Object (tag: tag, score: score);
+    }
+}
+
 public class Scratch.Widgets.SymbolPickerPopover : Gtk.Popover {
     private Gtk.SearchEntry search_entry;
     private Gtk.ListBox result_list;
     private Gtk.Label status_label;
     private Gee.ArrayList<SymbolPickerTag> tags;
+    private Gtk.Spinner? spinner;
+    private Gtk.Button? reindex_button;
+    private Gtk.Widget? global_header;
+    private Gtk.Widget? global_status;
+    private string[] project_roots = {};
+    private bool is_indexing = false;
+    private ulong file_updated_handler = 0;
+    private ulong index_state_handler = 0;
+    private uint results_update_timeout = 0;
     private GLib.Subprocess current_subprocess;
     private string temporary_directory = "";
     private bool is_destroyed = false;
 
-    public SymbolPickerPopover (Scratch.Services.Document document, Gtk.Widget relative_to) {
+    public SymbolPickerPopover (Scratch.Services.Document? document, Gtk.Widget relative_to,
+                                Scratch.Services.SymbolIndex? symbol_index = null,
+                                Scratch.Widgets.DocumentView? document_view = null) {
         Object (
             document: document,
+            symbol_index: symbol_index,
+            document_view: document_view,
             relative_to: relative_to,
             modal: true,
             position: Gtk.PositionType.BOTTOM,
@@ -107,6 +131,16 @@ public class Scratch.Widgets.SymbolPickerPopover : Gtk.Popover {
         get_style_context ().add_class ("fuzzy-popover");
 
         var heading = new Granite.HeaderLabel (_("Go to Symbol"));
+        if (symbol_index != null) {
+            var header = new Gtk.Box (Gtk.Orientation.HORIZONTAL, 6);
+            header.pack_start (heading, true, true, 0);
+            reindex_button = new Gtk.Button.from_icon_name ("view-refresh-symbolic", Gtk.IconSize.BUTTON) {
+                tooltip_text = _("Recheck all projects")
+            };
+            reindex_button.clicked.connect (() => start_global_indexing (true));
+            header.pack_end (reindex_button, false, false, 0);
+            global_header = header;
+        }
 
         search_entry = new Gtk.SearchEntry () {
             hexpand = true,
@@ -124,6 +158,15 @@ public class Scratch.Widgets.SymbolPickerPopover : Gtk.Popover {
             margin = 18
         };
         status_label.get_style_context ().add_class (Gtk.STYLE_CLASS_DIM_LABEL);
+        if (symbol_index != null) {
+            spinner = new Gtk.Spinner ();
+            var status_box = new Gtk.Box (Gtk.Orientation.HORIZONTAL, 6) {
+                halign = Gtk.Align.CENTER
+            };
+            status_box.add (spinner);
+            status_box.add (status_label);
+            global_status = status_box;
+        }
 
         var scrolled = new Gtk.ScrolledWindow (null, null) {
             propagate_natural_height = true,
@@ -135,10 +178,10 @@ public class Scratch.Widgets.SymbolPickerPopover : Gtk.Popover {
         scrolled.add (result_list);
 
         var content = new Gtk.Box (Gtk.Orientation.VERTICAL, 8);
-        content.add (heading);
+        content.add (global_header ?? heading);
         content.add (search_entry);
         content.add (scrolled);
-        content.add (status_label);
+        content.add (global_status ?? status_label);
         content.show_all ();
         add (content);
 
@@ -188,20 +231,118 @@ public class Scratch.Widgets.SymbolPickerPopover : Gtk.Popover {
 
         destroy.connect (() => {
             is_destroyed = true;
+            if (symbol_index != null) {
+                if (file_updated_handler != 0) {
+                    symbol_index.disconnect (file_updated_handler);
+                }
+                if (index_state_handler != 0) {
+                    symbol_index.disconnect (index_state_handler);
+                }
+            }
             if (current_subprocess != null) {
                 current_subprocess.force_exit ();
+            }
+            if (results_update_timeout != 0) {
+                Source.remove (results_update_timeout);
+                results_update_timeout = 0;
             }
             cleanup_temporary_source ();
         });
 
-        scan_document.begin ();
+        if (symbol_index == null) {
+            scan_document.begin ();
+        } else {
+            project_roots = new GLib.Settings ("io.elementary.code.folder-manager").get_strv ("opened-folders");
+            tags.add_all (symbol_index.get_cached_tags (project_roots));
+            file_updated_handler = symbol_index.file_updated.connect (on_index_file_updated);
+            index_state_handler = symbol_index.index_state_changed.connect (on_index_state_changed);
+            update_results ();
+            if (project_roots.length == 0) {
+                status_label.label = _("Open a project to search its symbols");
+                status_label.show ();
+            } else {
+                start_global_indexing (false);
+            }
+        }
     }
 
-    public Scratch.Services.Document document {
+    public Scratch.Services.Document? document {
         get; construct;
     }
 
+    public Scratch.Services.SymbolIndex? symbol_index { get; construct; }
+    public Scratch.Widgets.DocumentView? document_view { get; construct; }
+
+    private void start_global_indexing (bool recheck_all) {
+        if (symbol_index == null) {
+            return;
+        }
+        status_label.label = recheck_all ? _("Rechecking projects…") : _("Indexing projects; results are partial…");
+        symbol_index.start (project_roots, recheck_all);
+    }
+
+    private void on_index_file_updated (string path, Gee.ArrayList<SymbolPickerTag> updated_tags) {
+        for (var i = tags.size - 1; i >= 0; i--) {
+            if (tags[i].path == path) {
+                tags.remove_at (i);
+            }
+        }
+        tags.add_all (updated_tags);
+        if (!is_destroyed) {
+            schedule_results_update ();
+        }
+    }
+
+    private void schedule_results_update () {
+        if (results_update_timeout != 0) {
+            return;
+        }
+        results_update_timeout = Timeout.add (100, () => {
+            results_update_timeout = 0;
+            if (!is_destroyed) {
+                update_results ();
+            }
+            return Source.REMOVE;
+        });
+    }
+
+    private void on_index_state_changed (bool active, bool full, int completed, int total) {
+        if (is_destroyed) {
+            return;
+        }
+        if (active) {
+            is_indexing = true;
+            if (reindex_button != null) {
+                reindex_button.sensitive = false;
+            }
+            if (spinner != null) {
+                spinner.start ();
+            }
+            status_label.label = full
+                ? _("Indexing projects; results are partial…")
+                : _("Updating changed files; results are partial…");
+            status_label.show ();
+        } else {
+            is_indexing = false;
+            if (reindex_button != null) {
+                reindex_button.sensitive = true;
+            }
+            if (spinner != null) {
+                spinner.stop ();
+            }
+            status_label.label = tags.size == 0 ? _("No symbols found") : _("%d symbols").printf (tags.size);
+            if (tags.size > 0) {
+                status_label.hide ();
+            } else {
+                status_label.show ();
+            }
+        }
+    }
+
     private async void scan_document () {
+        if (document == null) {
+            return;
+        }
         string source_path;
         try {
             source_path = create_source_snapshot ();
@@ -278,6 +419,9 @@ public class Scratch.Widgets.SymbolPickerPopover : Gtk.Popover {
     }
 
     private string create_source_snapshot () throws Error {
+        if (document == null) {
+            throw new IOError.FAILED (_("This document has no local file"));
+        }
         var original_path = document.file.get_path ();
         if (original_path == null) {
             throw new IOError.FAILED (_("This document has no local file"));
@@ -298,6 +442,10 @@ public class Scratch.Widgets.SymbolPickerPopover : Gtk.Popover {
         }
 
         var basename = "source";
+        if (document == null) {
+            temporary_directory = "";
+            return;
+        }
         var original_path = document.file.get_path ();
         if (original_path != null) {
             var original_basename = Path.get_basename (original_path);
@@ -322,21 +470,40 @@ public class Scratch.Widgets.SymbolPickerPopover : Gtk.Popover {
         }
 
         var query = search_entry.text.strip ().casefold ();
-        foreach (var tag in tags) {
-            var score = query == "" ? 0 : fuzzy_score (query, tag);
-            if (score >= 0) {
-                result_list.add (new SymbolPickerRow (tag, score));
+        if (query == "") {
+            var visible_tags = int.min (tags.size, 300);
+            for (var i = 0; i < visible_tags; i++) {
+                result_list.add (new SymbolPickerRow (tags[i], 0));
+            }
+        } else {
+            var matches = new Gee.ArrayList<SymbolPickerMatch> ();
+            foreach (var tag in tags) {
+                var score = fuzzy_score (query, tag);
+                if (score >= 0) {
+                    matches.add (new SymbolPickerMatch (tag, score));
+                }
+            }
+
+            matches.sort (compare_matches);
+            var visible_matches = int.min (matches.size, 300);
+            for (var i = 0; i < visible_matches; i++) {
+                var match = matches[i];
+                result_list.add (new SymbolPickerRow (match.tag, match.score));
             }
         }
 
         var first_row = result_list.get_row_at_index (0);
         if (first_row != null) {
             result_list.select_row (first_row);
-            status_label.hide ();
+            if (!is_indexing) {
+                status_label.hide ();
+            }
         } else {
-            status_label.label = tags.size == 0
-                ? _("No symbols found")
-                : _("No matching symbols");
+            if (!is_indexing) {
+                status_label.label = tags.size == 0
+                    ? _("No symbols found")
+                    : _("No matching symbols");
+            }
             status_label.show ();
         }
 
@@ -344,7 +511,7 @@ public class Scratch.Widgets.SymbolPickerPopover : Gtk.Popover {
     }
 
     private int fuzzy_score (string query, SymbolPickerTag tag) {
-        var candidate = ("%s %s %s".printf (tag.name, tag.scope, tag.kind)).casefold ();
+        var candidate = ("%s %s %s %s".printf (tag.name, tag.scope, tag.kind, tag.path)).casefold ();
         var query_index = 0;
         var candidate_index = 0;
         var previous_match = -2;
@@ -381,9 +548,30 @@ public class Scratch.Widgets.SymbolPickerPopover : Gtk.Popover {
         return first_row.tag.line - second_row.tag.line;
     }
 
+    private int compare_matches (SymbolPickerMatch first, SymbolPickerMatch second) {
+        if (first.score != second.score) {
+            return second.score - first.score;
+        }
+        var by_name = strcmp (first.tag.name, second.tag.name);
+        if (by_name != 0) {
+            return by_name;
+        }
+        return first.tag.line - second.tag.line;
+    }
+
     private void select_tag (SymbolPickerTag tag) {
-        document.goto (tag.line);
         popdown ();
-        document.source_view.grab_focus ();
+        if (tag.path != "" && document_view != null) {
+            document_view.open_document.begin (tag.path, true, -2, SelectionRange.EMPTY, (obj, res) => {
+                document_view.open_document.end (res);
+                if (document_view.current_document != null) {
+                    document_view.current_document.goto (tag.line);
+                    document_view.current_document.source_view.grab_focus ();
+                }
+            });
+        } else if (document != null) {
+            document.goto (tag.line);
+            document.source_view.grab_focus ();
+        }
     }
 }

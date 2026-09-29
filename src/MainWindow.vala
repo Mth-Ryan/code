@@ -60,6 +60,7 @@ public class Scratch.MainWindow : Hdy.Window {
     public const string ACTION_COLLAPSE_ALL_FOLDERS = "action-collapse-all-folders";
     public const string ACTION_GO_TO = "action-go-to";
     public const string ACTION_PICK_SYMBOL = "action-pick-symbol";
+    public const string ACTION_PICK_GLOBAL_SYMBOL = "action-pick-global-symbol";
     public const string ACTION_NEW_TAB = "action-new-tab";
     public const string ACTION_NEW_FROM_CLIPBOARD = "action-new-from-clipboard";
     public const string ACTION_DUPLICATE_TAB = "action-duplicate-tab";
@@ -121,6 +122,7 @@ public class Scratch.MainWindow : Hdy.Window {
         { ACTION_TOGGLE_SHOW_FIND, action_toggle_show_find, null, "false" },
         { ACTION_GO_TO, action_go_to },
         { ACTION_PICK_SYMBOL, action_pick_symbol },
+        { ACTION_PICK_GLOBAL_SYMBOL, action_pick_global_symbol },
         { ACTION_NEW_TAB, action_new_tab },
         { ACTION_NEW_FROM_CLIPBOARD, action_new_tab_from_clipboard },
         { ACTION_DUPLICATE_TAB, action_duplicate_tab },
@@ -174,6 +176,7 @@ public class Scratch.MainWindow : Hdy.Window {
     private Scratch.Services.PluginsManager plugins;
     private Scratch.Widgets.SearchBar search_bar;
     private Services.GitManager git_manager;
+    private Services.SymbolIndex symbol_index;
 
     private delegate void HookFunc ();
 
@@ -204,6 +207,7 @@ public class Scratch.MainWindow : Hdy.Window {
         action_accelerators.set (ACTION_SAVE_AS, "<Control><shift>s");
         action_accelerators.set (ACTION_GO_TO, "<Control>i");
         action_accelerators.set (ACTION_PICK_SYMBOL, "<Control>g");
+        action_accelerators.set (ACTION_PICK_GLOBAL_SYMBOL, "<Control><shift>g");
         action_accelerators.set (ACTION_NEW_TAB, "<Control>n");
         action_accelerators.set (ACTION_DUPLICATE_TAB, "<Control><Shift>k" );
         action_accelerators.set (ACTION_UNDO, "<Control>z");
@@ -256,6 +260,7 @@ public class Scratch.MainWindow : Hdy.Window {
 
         document_manager = Scratch.Services.DocumentManager.get_instance ();
         git_manager = Services.GitManager.get_instance ();
+        symbol_index = new Services.SymbolIndex ();
 
         actions = new SimpleActionGroup ();
         actions.add_action_entries (ACTION_ENTRIES, this);
@@ -582,7 +587,8 @@ public class Scratch.MainWindow : Hdy.Window {
             set_widgets_sensitive (false);
         });
 
-        document_view.tab_added.connect (() => {
+        document_view.tab_added.connect ((doc) => {
+            doc.document_saved.connect ((path) => symbol_index.invalidate_file (path));
             content_stack.visible_child = view_grid;
             toolbar.document_available (true);
             set_widgets_sensitive (true);
@@ -1355,6 +1361,7 @@ public class Scratch.MainWindow : Hdy.Window {
             Utils.action_from_group (ACTION_FIND_NEXT, actions).set_enabled (is_current_doc);
             Utils.action_from_group (ACTION_FIND_PREVIOUS, actions).set_enabled (is_current_doc);
             Utils.action_from_group (ACTION_PICK_SYMBOL, actions).set_enabled (is_current_doc);
+            Utils.action_from_group (ACTION_PICK_GLOBAL_SYMBOL, actions).set_enabled (true);
             var can_global_search = is_current_doc || git_manager.active_project_path != null;
             Utils.action_from_group (ACTION_FIND_GLOBAL, actions).set_enabled (can_global_search);
 
@@ -1392,6 +1399,20 @@ public class Scratch.MainWindow : Hdy.Window {
         picker.closed.connect (() => {
             picker_action.set_enabled (get_current_document () != null);
             doc.source_view.grab_focus ();
+        });
+        picker.popup ();
+    }
+
+    private void action_pick_global_symbol () {
+        var picker = new Scratch.Widgets.SymbolPickerPopover (null, document_view, symbol_index, document_view);
+        var picker_action = Utils.action_from_group (ACTION_PICK_GLOBAL_SYMBOL, actions);
+        picker_action.set_enabled (false);
+        picker.closed.connect (() => {
+            picker_action.set_enabled (true);
+            var doc = get_current_document ();
+            if (doc != null) {
+                doc.source_view.grab_focus ();
+            }
         });
         picker.popup ();
     }

@@ -41,6 +41,7 @@
             fontconfig
             pango
             vte
+            sqlite
             editorconfig-core-c
             gtkspell3
             libsoup_3
